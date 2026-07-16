@@ -178,7 +178,13 @@ export default async function handler(req) {
               const data = line.slice(5).trim();
               try {
                 const parsed = JSON.parse(data);
-                const text = parsed?.choices?.[0]?.delta?.content;
+                let text = parsed?.choices?.[0]?.delta?.content;
+                if (!text) {
+                  text = parsed?.delta || parsed?.text || parsed?.content || parsed?.value;
+                }
+                if (!text && parsed?.item?.content?.[0]?.text) {
+                  text = parsed.item.content[0].text;
+                }
                 if (text) await writer.write(encoder.encode(text));
               } catch {}
             }
@@ -197,7 +203,19 @@ export default async function handler(req) {
           if (data === '[DONE]' || !data) continue;
           try {
             const parsed = JSON.parse(data);
-            const text = parsed?.choices?.[0]?.delta?.content;
+            // 1. Standard OpenAI Chat Completions fallback
+            let text = parsed?.choices?.[0]?.delta?.content;
+            
+            // 2. OpenAI / Azure Responses API / Realtime API delta fallback
+            if (!text) {
+              text = parsed?.delta || parsed?.text || parsed?.content || parsed?.value;
+            }
+            
+            // 3. Nested delta text fallback (e.g., event responses)
+            if (!text && parsed?.item?.content?.[0]?.text) {
+              text = parsed.item.content[0].text;
+            }
+            
             if (text) await writer.write(encoder.encode(text));
           } catch (e) {}
         }
