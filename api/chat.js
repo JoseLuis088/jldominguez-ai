@@ -109,31 +109,46 @@ export default async function handler(req) {
     parts: [{ text: m.content }]
   }));
 
-  const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${apiKey}&alt=sse`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: geminiMessages,
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        generationConfig: {
-          temperature: 0.75,
-          maxOutputTokens: 900,
-          topP: 0.9,
-        },
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        ]
-      })
-    }
-  );
+  let geminiRes;
+  try {
+    geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${apiKey}&alt=sse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: geminiMessages,
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT + "\n\nCRITICAL: Escribe respuestas concisas y al grano (máximo 120-150 palabras). Evita textos innecesariamente largos para garantizar que la respuesta se entregue rápido." }] },
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 500,
+            topP: 0.9,
+          }
+        })
+      }
+    );
+  } catch (e) {
+    return new Response(JSON.stringify({ error: `Error de red con Gemini: ${e.message}` }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 
   if (!geminiRes.ok) {
     const err = await geminiRes.text();
-    return new Response(JSON.stringify({ error: `Error Gemini: ${err}` }), {
-      status: 500,
+    let errMsg = err;
+    try {
+      const parsedErr = JSON.parse(err);
+      errMsg = parsedErr.error?.message || err;
+    } catch {}
+    
+    // Check if rate limited or high demand
+    if (geminiRes.status === 429 || geminiRes.status === 503) {
+      errMsg = "El servicio de IA está experimentando alta demanda en el tier gratuito de Google. Por favor, intenta de nuevo en unos segundos.";
+    }
+
+    return new Response(JSON.stringify({ error: errMsg }), {
+      status: geminiRes.status,
       headers: { 'Content-Type': 'application/json' }
     });
   }
@@ -148,12 +163,29 @@ export default async function handler(req) {
     try {
       const reader = geminiRes.body.getReader();
       let buffer = '';
+      
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // Process remaining buffer before finishing
+          if (buffer.trim()) {
+            const line = buffer.trim();
+            if (line.startsWith('data:')) {
+              const data = line.slice(5).trim();
+              try {
+                const parsed = JSON.parse(data);
+                const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) await writer.write(encoder.encode(text));
+              } catch {}
+            }
+          }
+          break;
+        }
+        
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
+        
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
@@ -163,11 +195,13 @@ export default async function handler(req) {
             const parsed = JSON.parse(data);
             const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
             if (text) await writer.write(encoder.encode(text));
-          } catch { /* skip malformed */ }
+          } catch (e) {
+            // Keep parsing other lines
+          }
         }
       }
     } catch (e) {
-      await writer.write(encoder.encode(`\n[Error: ${e.message}]`));
+      await writer.write(encoder.encode(`\n[Error en stream: ${e.message}]`));
     } finally {
       await writer.close();
     }
@@ -175,8 +209,9 @@ export default async function handler(req) {
 
   return new Response(readable, {
     headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Transfer-Encoding': 'chunked',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
       'X-Content-Type-Options': 'nosniff',
     }
