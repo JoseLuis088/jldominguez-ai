@@ -109,13 +109,10 @@ export default async function handler(req) {
   }
 
   // Prepare standard OpenAI messages payload
-  const formattedMessages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...messages.map(m => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content
-    }))
-  ];
+  const formattedMessages = messages.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: m.content
+  }));
 
   // Clean endpoint formatting: remove trailing slash if exists
   let azureUrl = endpoint;
@@ -134,7 +131,8 @@ export default async function handler(req) {
       },
       body: JSON.stringify({
         model: deployment,
-        messages: formattedMessages,
+        input: formattedMessages,
+        instructions: SYSTEM_PROMPT,
         temperature: 0.7,
         max_tokens: 500,
         top_p: 0.95,
