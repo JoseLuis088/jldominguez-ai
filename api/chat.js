@@ -119,7 +119,7 @@ export default async function handler(req) {
 
   // Clean endpoint formatting: remove trailing slash if exists
   let azureUrl = endpoint;
-  if (!endpoint.includes('/openai/deployments/')) {
+  if (!endpoint.includes('/openai/v1/') && !endpoint.includes('/openai/deployments/')) {
     const baseEndpoint = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
     azureUrl = `${baseEndpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
   }
@@ -133,6 +133,7 @@ export default async function handler(req) {
         'api-key': apiKey
       },
       body: JSON.stringify({
+        model: deployment,
         messages: formattedMessages,
         temperature: 0.7,
         max_tokens: 500,
