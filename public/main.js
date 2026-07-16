@@ -131,7 +131,12 @@ async function sendText(text) {
 
     if (!response.ok) {
       const err = await response.text();
-      addMessage('assistant', `⚠️ Error al conectar: ${err || 'Inténtalo de nuevo.'}`);
+      let errMsg = err;
+      try {
+        const parsed = JSON.parse(err);
+        errMsg = parsed.error || err;
+      } catch {}
+      addMessage('assistant', `⚠️ Error al conectar: ${errMsg}`);
       return;
     }
 
