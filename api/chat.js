@@ -134,8 +134,6 @@ export default async function handler(req) {
         input: formattedMessages,
         instructions: SYSTEM_PROMPT,
         temperature: 0.7,
-        max_tokens: 500,
-        top_p: 0.95,
         stream: true
       })
     });
