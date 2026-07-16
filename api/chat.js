@@ -58,7 +58,7 @@ Ubicación: Chihuahua, Chihuahua, México
 
 === REGLAS DE COMPORTAMIENTO ===
 1. Responde SIEMPRE en primera persona como José Luis.
-2. Sé conciso y directo (máximo 3-4 párrafos) a menos que te pidan profundidad.
+2. Sé conciso y directo (máximo 120-150 palabras). Evita respuestas largas innecesarias.
 3. Da ejemplos concretos de tus proyectos cuando sea relevante.
 4. Si te preguntan algo muy personal o que no está en este contexto, di amablemente que prefieren hablar directamente por WhatsApp (614) 122-7183 o correo socka.08.mat@gmail.com.
 5. NO inventes información que no esté en este documento.
@@ -83,9 +83,14 @@ export default async function handler(req) {
     return new Response('Método no permitido', { status: 405 });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'API key no configurada' }), {
+  // Get Azure OpenAI Config from Environment Variables
+  const apiKey = process.env.AZURE_OPENAI_KEY;
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT;
+  const apiVersion = process.env.AZURE_OPENAI_VERSION || '2024-02-15-preview';
+
+  if (!apiKey || !endpoint || !deployment) {
+    return new Response(JSON.stringify({ error: 'Configuración de Azure OpenAI incompleta en las variables de entorno' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });
@@ -103,57 +108,56 @@ export default async function handler(req) {
     return new Response(JSON.stringify({ error: 'Se requiere messages[]' }), { status: 400 });
   }
 
-  // Convert to Gemini format
-  const geminiMessages = messages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }]
-  }));
+  // Prepare standard OpenAI messages payload
+  const formattedMessages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...messages.map(m => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content
+    }))
+  ];
 
-  let geminiRes;
+  // Clean endpoint formatting: remove trailing slash if exists
+  const baseEndpoint = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+  const azureUrl = `${baseEndpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+
+  let azureRes;
   try {
-    geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${apiKey}&alt=sse`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: geminiMessages,
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT + "\n\nCRITICAL: Escribe respuestas concisas y al grano (máximo 120-150 palabras). Evita textos innecesariamente largos para garantizar que la respuesta se entregue rápido." }] },
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 500,
-            topP: 0.9,
-          }
-        })
-      }
-    );
+    azureRes = await fetch(azureUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': apiKey
+      },
+      body: JSON.stringify({
+        messages: formattedMessages,
+        temperature: 0.7,
+        max_tokens: 500,
+        top_p: 0.95,
+        stream: true
+      })
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ error: `Error de red con Gemini: ${e.message}` }), {
+    return new Response(JSON.stringify({ error: `Error de conexión con Azure: ${e.message}` }), {
       status: 502,
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  if (!geminiRes.ok) {
-    const err = await geminiRes.text();
-    let errMsg = err;
+  if (!azureRes.ok) {
+    const errText = await azureRes.text();
+    let errMsg = errText;
     try {
-      const parsedErr = JSON.parse(err);
-      errMsg = parsedErr.error?.message || err;
+      const parsed = JSON.parse(errText);
+      errMsg = parsed.error?.message || errText;
     } catch {}
-    
-    // Check if rate limited or high demand
-    if (geminiRes.status === 429 || geminiRes.status === 503) {
-      errMsg = "El servicio de IA está experimentando alta demanda en el tier gratuito de Google. Por favor, intenta de nuevo en unos segundos.";
-    }
-
-    return new Response(JSON.stringify({ error: errMsg }), {
-      status: geminiRes.status,
+    return new Response(JSON.stringify({ error: `Error de Azure OpenAI: ${errMsg}` }), {
+      status: azureRes.status,
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  // Stream the response
+  // Stream output parser for OpenAI SSE format
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -161,31 +165,31 @@ export default async function handler(req) {
 
   (async () => {
     try {
-      const reader = geminiRes.body.getReader();
+      const reader = azureRes.body.getReader();
       let buffer = '';
       
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
-          // Process remaining buffer before finishing
+          // Process final chunk in buffer
           if (buffer.trim()) {
             const line = buffer.trim();
-            if (line.startsWith('data:')) {
+            if (line.startsWith('data:') && line !== 'data: [DONE]') {
               const data = line.slice(5).trim();
               try {
                 const parsed = JSON.parse(data);
-                const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+                const text = parsed?.choices?.[0]?.delta?.content;
                 if (text) await writer.write(encoder.encode(text));
               } catch {}
             }
           }
           break;
         }
-        
+
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-        
+
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
@@ -193,11 +197,9 @@ export default async function handler(req) {
           if (data === '[DONE]' || !data) continue;
           try {
             const parsed = JSON.parse(data);
-            const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+            const text = parsed?.choices?.[0]?.delta?.content;
             if (text) await writer.write(encoder.encode(text));
-          } catch (e) {
-            // Keep parsing other lines
-          }
+          } catch (e) {}
         }
       }
     } catch (e) {
