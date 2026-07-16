@@ -179,11 +179,12 @@ export default async function handler(req) {
               try {
                 const parsed = JSON.parse(data);
                 let text = parsed?.choices?.[0]?.delta?.content;
-                if (!text) {
-                  text = parsed?.delta || parsed?.text || parsed?.content || parsed?.value;
-                }
-                if (!text && parsed?.item?.content?.[0]?.text) {
-                  text = parsed.item.content[0].text;
+                if (!text && parsed?.delta) {
+                  if (typeof parsed.delta === 'string') {
+                    text = parsed.delta;
+                  } else if (typeof parsed.delta === 'object') {
+                    text = parsed.delta?.text || parsed.delta?.content;
+                  }
                 }
                 if (text) await writer.write(encoder.encode(text));
               } catch {}
@@ -207,13 +208,12 @@ export default async function handler(req) {
             let text = parsed?.choices?.[0]?.delta?.content;
             
             // 2. OpenAI / Azure Responses API / Realtime API delta fallback
-            if (!text) {
-              text = parsed?.delta || parsed?.text || parsed?.content || parsed?.value;
-            }
-            
-            // 3. Nested delta text fallback (e.g., event responses)
-            if (!text && parsed?.item?.content?.[0]?.text) {
-              text = parsed.item.content[0].text;
+            if (!text && parsed?.delta) {
+              if (typeof parsed.delta === 'string') {
+                text = parsed.delta;
+              } else if (typeof parsed.delta === 'object') {
+                text = parsed.delta?.text || parsed.delta?.content;
+              }
             }
             
             if (text) await writer.write(encoder.encode(text));
