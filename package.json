@@ -1,0 +1,8 @@
+{
+  "name": "jldominguez-ai",
+  "version": "1.0.0",
+  "description": "José Luis Domínguez — AI Personal Assistant",
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
